@@ -109,7 +109,7 @@ footer button{border:1px solid var(--line);background:var(--card);color:var(--mu
     <button id="tabReport">Report</button>
   </div>
   <div id="view"></div>
-  <footer><button id="reset">Clear this week’s progress</button></footer>
+  <footer><button id="reset">Clear this week’s progress</button><div id="sync" style="margin-top:12px;font-size:12px;color:var(--muted)"></div></footer>
 </div>
 
 <script>
@@ -159,6 +159,62 @@ var SKEY = "schedule_state_" + WHO;
 var state = {};
 try { state = JSON.parse(localStorage.getItem(SKEY) || "{}") || {}; } catch(e){ state = {}; }
 function save(){ try { localStorage.setItem(SKEY, JSON.stringify(state)); } catch(e){} }
+
+var API = "https://script.google.com/macros/s/AKfycbwuptGVIp4TGeud8GQd5QD17_hmpYkfMUR8FwY21LN38XpMeG0qwhOdKRKDktbqs1dP/exec";
+var TKEY = SKEY + "_t", PKEY = SKEY + "_p";
+var stamps = {}, pending = {};
+try { stamps = JSON.parse(localStorage.getItem(TKEY) || "{}") || {}; } catch(e){ stamps = {}; }
+try { pending = JSON.parse(localStorage.getItem(PKEY) || "{}") || {}; } catch(e){ pending = {}; }
+function saveMeta(){ try { localStorage.setItem(TKEY, JSON.stringify(stamps)); localStorage.setItem(PKEY, JSON.stringify(pending)); } catch(e){} }
+(function(){ var n = Date.now(); for(var k in state){ if(!stamps[k]){ stamps[k] = n; pending[k] = 1; } } saveMeta(); })();
+function setSync(t){ var el = document.getElementById("sync"); if(el) el.textContent = t; }
+function itemOf(k){
+  var p = k.split("|"), d = p[0].split("-");
+  var dt = new Date(+d[0], +d[1]-1, +d[2]);
+  return (SCHEDULE[dt.getDay()] || [])[+p[1]] || {name:"", t:""};
+}
+function pushKey(k){
+  var it = itemOf(k);
+  var url = API + "?action=set&who=" + WHO + "&key=" + encodeURIComponent(k)
+    + "&v=" + encodeURIComponent(state[k] || "") + "&t=" + stamps[k]
+    + "&n=" + encodeURIComponent(it.name) + "&ty=" + encodeURIComponent(it.t);
+  return fetch(url).then(function(r){ return r.json(); }).then(function(j){ if(!j || !j.ok) throw new Error("push"); });
+}
+function flush(){
+  var keys = Object.keys(pending);
+  if(!keys.length) return Promise.resolve();
+  setSync("Syncing\u2026");
+  return keys.reduce(function(p, k){
+    return p.then(function(){
+      var st = stamps[k];
+      return pushKey(k).then(function(){ if(stamps[k] === st){ delete pending[k]; saveMeta(); } });
+    });
+  }, Promise.resolve());
+}
+function pull(){
+  return fetch(API + "?who=" + WHO).then(function(r){ return r.json(); }).then(function(j){
+    var rs = (j && j.state) || {}, changed = false;
+    for(var k in rs){
+      var rt = rs[k].t || 0;
+      if(rt > (stamps[k] || 0)){
+        if(rs[k].v){ state[k] = rs[k].v; } else { delete state[k]; }
+        stamps[k] = rt; delete pending[k]; changed = true;
+      }
+    }
+    if(changed){ save(); saveMeta(); render(); }
+  });
+}
+var syncing = false, again = false;
+function sync(){
+  if(!API) return;
+  if(syncing){ again = true; return; }
+  syncing = true;
+  flush().then(pull)
+    .then(function(){ setSync("Synced \u2713"); })
+    .catch(function(){ setSync("Offline \u2013 will sync when you\u2019re back online"); })
+    .then(function(){ syncing = false; if(again){ again = false; sync(); } });
+}
+function touch(k){ stamps[k] = Date.now(); pending[k] = 1; saveMeta(); sync(); }
 
 var mode = "today";
 var now = new Date();
@@ -351,6 +407,7 @@ document.getElementById("view").addEventListener("click", function(e){
   var k = b.getAttribute("data-k"), val = b.getAttribute("data-v");
   if(state[k] === val) delete state[k]; else state[k] = val;
   save();
+  touch(k);
   var y = window.scrollY;
   render();
   window.scrollTo(0, y);
@@ -366,10 +423,22 @@ document.getElementById("tabToday").onclick = function(){ setTab("today"); };
 document.getElementById("tabWeek").onclick = function(){ setTab("week"); };
 document.getElementById("tabReport").onclick = function(){ setTab("report"); };
 document.getElementById("reset").onclick = function(){
-  if(!confirm("Clear everything you have marked so far?")) return;
-  state = {}; save(); render();
+  if(!confirm("Clear everything you marked this week?")) return;
+  var back = (now.getDay() + 1) % 7;
+  var ws = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back);
+  var we = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + 6);
+  var a = iso(ws), b = iso(we);
+  Object.keys(state).forEach(function(k){
+    var d = k.split("|")[0];
+    if(d >= a && d <= b){ delete state[k]; touch(k); }
+  });
+  save(); render();
 };
 render();
+sync();
+window.addEventListener("online", sync);
+document.addEventListener("visibilitychange", function(){ if(!document.hidden) sync(); });
+setInterval(function(){ if(!document.hidden) sync(); }, 60000);
 </script>
 <script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){});});}</script>
 <script>
